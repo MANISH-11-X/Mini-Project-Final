@@ -24,7 +24,22 @@ import os
 from google import genai
 from eat_first_model import predict_priority
 
-genai_client = genai.Client(api_key="AQ.Ab8RN6LOI5ZYtxrGoT-WlvlfvdkLg-S_hg8bBhOgTIF9KdbIcQ")
+load_dotenv()
+
+# Configure GEMINI_API_KEY in .env locally and in Render Environment.
+gemini_api_key = os.getenv("GEMINI_API_KEY")
+genai_client = genai.Client(api_key=gemini_api_key) if gemini_api_key else None
+
+
+def safe_notify(**kwargs):
+    """Desktop notifications are only available on a local desktop."""
+    if os.getenv("RENDER"):
+        return
+    try:
+        notification.notify(**kwargs)
+    except Exception as exc:
+        app.logger.warning("Desktop notification unavailable: %s", exc)
+
 
 
 # =========================================================
@@ -33,7 +48,7 @@ genai_client = genai.Client(api_key="AQ.Ab8RN6LOI5ZYtxrGoT-WlvlfvdkLg-S_hg8bBhOg
 
 app = Flask(__name__)
 
-app.secret_key = "manish"
+app.secret_key = os.getenv("SECRET_KEY", "local-development-only-change-me")
 app.permanent_session_lifetime = timedelta(days=15)
 
 
@@ -41,7 +56,11 @@ app.permanent_session_lifetime = timedelta(days=15)
 # MONGODB
 # =========================================================
 
-client = MongoClient("mongodb://localhost:27017")
+MONGO_URI = os.getenv("MONGO_URI")
+if not MONGO_URI:
+    raise RuntimeError("MONGO_URI is missing. Set it in .env or Render Environment.")
+
+client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=10000)
 
 db = client["food_manager"]
 
@@ -81,7 +100,7 @@ def check_expiry():
 
             if expiry == reminder_date:
 
-                notification.notify(
+                safe_notify(
                     title="Food Expiry Reminder",
                     message=f"{food['food_name']} will expire tomorrow!",
                     timeout=10
@@ -225,7 +244,7 @@ def register():
             "password": password
         })
 
-        notification.notify(
+        safe_notify(
             title="Grocery Food Manager",
             message="Register Successfully!"
         )
@@ -368,7 +387,7 @@ def add():
 
     })
 
-    notification.notify(
+    safe_notify(
         title="Grocery Food Manager",
         message=f"{food_name} Added Successfully!"
     )
@@ -416,7 +435,7 @@ def delete(id):
 
     })
 
-    notification.notify(
+    safe_notify(
         title="Grocery Food Manager",
         message="Food Deleted Successfully!"
     )
@@ -483,7 +502,7 @@ def delete_user(u_id):
         "_id": ObjectId(u_id)
     })
 
-    notification.notify(
+    safe_notify(
         title="Grocery Food Manager",
         message="Account Deleted Successfully!"
     )
@@ -511,6 +530,9 @@ def food():
     if request.method == "POST":
 
         foodname = request.form["foodname"]
+
+        if genai_client is None:
+            return "GEMINI_API_KEY is not configured on the server.", 503
 
         response = genai_client.models.generate_content(
 
@@ -1167,14 +1189,15 @@ def waste_prevention():
 # START EXPIRY THREAD
 # =========================================================
 
-threading.Thread(
-    target=check_expiry,
-    daemon=True
-).start()
+# The desktop expiry checker should run locally only. On Render, browser
+# push notifications require a separate scheduled job rather than a GUI thread.
+if not os.getenv("RENDER"):
+    threading.Thread(target=check_expiry, daemon=True).start()
 
 
 # =========================================================
 # RUN APP
 # =========================================================
 
-app.run(debug=True)
+if __name__ == "__main__":
+    app.run(debug=True)
